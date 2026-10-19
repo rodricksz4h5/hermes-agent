@@ -125,6 +125,34 @@ async def test_irc_split_text_merges_through_the_receive_loop(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_buzz_split_text_merges_through_the_event_reader(monkeypatch):
+    from gateway import platform_registry
+    from gateway.platform_registry import PlatformEntry, PlatformRegistry
+    from tests.gateway._plugin_adapter_loader import load_plugin_adapter
+    sender, channel = 'a' * 64, 'ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd'
+    monkeypatch.setenv('BUZZ_ALLOWED_USERS', sender)
+    module = load_plugin_adapter('buzz')
+    registry = PlatformRegistry()
+    monkeypatch.setattr(platform_registry, 'platform_registry', registry)
+    module.register(SimpleNamespace(register_platform=lambda **kw: registry.register(PlatformEntry(**kw))))
+    adapter = module.BuzzAdapter(PlatformConfig(enabled=True, typing_indicator=False,
+                                                extra={'relay_url': 'https://test.relay'}))
+    adapter._self_pubkey, adapter._private_key = '9' * 64, 'nsec1test'
+    adapter._user_names[sender] = 'Other'
+    adapter.set_authorization_check(lambda *_a: True)
+    monkeypatch.setattr(adapter, 'send_reaction', lambda *a, **k: asyncio.sleep(0))
+    state = adapter._channel_state[channel] = {'chat_type': 'dm', 'last_ts': 0, 'seen': {}}
+    source = adapter.build_source(chat_id=channel, chat_name=channel, chat_type='dm',
+                                  user_id=sender, user_name='Other')
+    owner = await _busy_owner(monkeypatch, adapter, source, busy_text_mode='queue')
+    events = [{'id': f'e{n}', 'pubkey': sender, 'content': text, 'created_at': 2000 + n, 'kind': 9,
+               'tags': [['h', channel]]} for n, text in enumerate(['first half', 'second half'])]
+    # One poll sweep, or WebSocket frames: the reader body both transports await.
+    await asyncio.wait_for(adapter._handle_events(channel, state, events), 10)
+    assert await owner.settle(2) == [('first half\nsecond half', 0)]
+
+
+@pytest.mark.asyncio
 async def test_restart_after_a_held_text_waits_for_its_commit(monkeypatch):
     """A text, then an authorized /restart inside the burst window: the text is queued before
     admission closes, so the next owner runs it."""
