@@ -348,13 +348,17 @@ def _empty_requested_mcp_toolsets(job: dict, cfg: dict) -> Optional[str]:
     from hermes_cli.tools_config import enabled_mcp_server_names
     from toolsets import resolve_toolset
     from tools.mcp_tool_discovery import mcp_server_reconnecting
-    missing = [name for name in requested
-               if name in enabled_mcp_server_names(cfg) and not resolve_toolset(name)]
+    enabled = enabled_mcp_server_names(cfg)
+    # A job names a server by its bare alias or by its toolset name ``mcp-<server>`` (#141468);
+    # both spellings are the same server, and its connection is keyed by the bare name.
+    server = {name: name[4:] if name.startswith("mcp-") and name not in enabled and name[4:] in enabled
+              else name for name in requested}
+    missing = [name for name in requested if server[name] in enabled and not resolve_toolset(name)]
     # A server that worked in this process and is parked/self-probing after a network blip
     # (router reboot, DNS failure) is recovering, not misconfigured: the job runs with the tools
     # that did resolve rather than losing a whole tick to a minute of downtime (#112871). Only a
     # server that never connected for this profile is judged below.
-    reconnecting = sorted(name for name in missing if mcp_server_reconnecting(name))
+    reconnecting = sorted(name for name in missing if mcp_server_reconnecting(server[name]))
     job_id = str(job.get("id", "?"))
     # One WARNING per job+server per outage (like the one-shot blocked_config alert), not one per
     # tick; the entry drops once the server is back so the next outage warns again.
